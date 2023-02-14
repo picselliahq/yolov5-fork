@@ -19,7 +19,6 @@ import argparse
 import math
 import os
 import random
-import subprocess
 import sys
 import time
 from copy import deepcopy
@@ -61,13 +60,15 @@ from utils.plots import plot_evolve
 from utils.torch_utils import (EarlyStopping, ModelEMA, de_parallel, select_device, smart_DDP, smart_optimizer,
                                smart_resume, torch_distributed_zero_first)
 
+from picsellia.types.enums import LogType
+
 LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv('RANK', -1))
 WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
 GIT_INFO = check_git_info()
 
 
-def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictionary
+def train(hyp, opt, device, callbacks, pxl=None):  # hyp is path/to/hyp.yaml or hyp dictionary
     save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze = \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
         opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze
@@ -75,6 +76,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
     # Directories
     w = save_dir / 'weights'  # weights dir
+    if not os.path.exists(w):
+        os.makedirs(w)
     (w.parent if evolve else w).mkdir(parents=True, exist_ok=True)  # make dir
     last, best = w / 'last.pt', w / 'best.pt'
 
@@ -360,7 +363,26 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                                 plots=False,
                                                 callbacks=callbacks,
                                                 compute_loss=compute_loss)
-
+                
+            keys = ['train/box_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
+                    'metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95',
+                    'val/box_loss', 'val/obj_loss', 'val/cls_loss',  # val loss
+                    'x/lr0', 'x/lr1', 'x/lr2']  # params
+    
+            for x, key in zip(list(mloss[:-1]) + list(results) + lr, keys):
+                try:
+                    name = str(key).replace('/', '_')
+                    pxl.log(name=name, type=LogType.LINE, data=float(x))
+                except Exception as e:
+                    LOGGER.info(str(e))
+                    try:
+                        #name = tag.cpu()
+                        name = str(key).replace('/', '_')
+                        pxl.log(name=name, type=LogType.LINE, data=float(x))
+                    except Exception as e:
+                        print(e)
+                        print(key, "can't be uploaded")
+                                
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             stop = stopper(epoch=epoch, fitness=fi)  # early stop check
@@ -523,7 +545,7 @@ def main(opt, callbacks=Callbacks()):
         torch.cuda.set_device(LOCAL_RANK)
         device = torch.device('cuda', LOCAL_RANK)
         dist.init_process_group(backend="nccl" if dist.is_nccl_available() else "gloo")
-
+    
     # Train
     if not opt.evolve:
         train(opt.hyp, opt, device, callbacks)
@@ -572,12 +594,7 @@ def main(opt, callbacks=Callbacks()):
         # ei = [isinstance(x, (int, float)) for x in hyp.values()]  # evolvable indices
         evolve_yaml, evolve_csv = save_dir / 'hyp_evolve.yaml', save_dir / 'evolve.csv'
         if opt.bucket:
-            # download evolve.csv if exists
-            subprocess.run([
-                'gsutil',
-                'cp',
-                f'gs://{opt.bucket}/evolve.csv',
-                str(evolve_csv),])
+            os.system(f'gsutil cp gs://{opt.bucket}/evolve.csv {evolve_csv}')  # download evolve.csv if exists
 
         for _ in range(opt.evolve):  # generations to evolve
             if evolve_csv.exists():  # if evolve.csv exists: select best hyps and mutate
@@ -617,6 +634,7 @@ def main(opt, callbacks=Callbacks()):
             # Write mutation results
             keys = ('metrics/precision', 'metrics/recall', 'metrics/mAP_0.5', 'metrics/mAP_0.5:0.95', 'val/box_loss',
                     'val/obj_loss', 'val/cls_loss')
+            
             print_mutation(keys, results, hyp.copy(), save_dir, opt.bucket)
 
         # Plot results

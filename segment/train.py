@@ -19,7 +19,6 @@ import argparse
 import math
 import os
 import random
-import subprocess
 import sys
 import time
 from copy import deepcopy
@@ -33,6 +32,8 @@ import torch.nn as nn
 import yaml
 from torch.optim import lr_scheduler
 from tqdm import tqdm
+
+from picsellia.types.enums import LogType
 
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[1]  # YOLOv5 root directory
@@ -66,7 +67,7 @@ WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
 GIT_INFO = check_git_info()
 
 
-def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictionary
+def train(hyp, opt, device, callbacks, pxl=None):  # hyp is path/to/hyp.yaml or hyp dictionary
     save_dir, epochs, batch_size, weights, single_cls, evolve, data, cfg, resume, noval, nosave, workers, freeze, mask_ratio = \
         Path(opt.save_dir), opt.epochs, opt.batch_size, opt.weights, opt.single_cls, opt.evolve, opt.data, opt.cfg, \
         opt.resume, opt.noval, opt.nosave, opt.workers, opt.freeze, opt.mask_ratio
@@ -74,6 +75,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
     # Directories
     w = save_dir / 'weights'  # weights dir
+    if not os.path.exists(w):
+        os.makedirs(w)
     (w.parent if evolve else w).mkdir(parents=True, exist_ok=True)  # make dir
     last, best = w / 'last.pt', w / 'best.pt'
 
@@ -370,6 +373,25 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                                 compute_loss=compute_loss,
                                                 mask_downsample_ratio=mask_ratio,
                                                 overlap=overlap)
+            keys = ['train/box_loss', 'train/seg_loss', 'train/obj_loss', 'train/cls_loss',  # train loss
+                    'metrics/precision(B)', 'metrics/recall(B)', 'metrics/mAP_0.5(B)', 'metrics/mAP_0.5:0.95(B)',
+                    'metrics/precision(M)', 'metrics/recall(M)', 'metrics/mAP_0.5(M)', 'metrics/mAP_0.5:0.95(M)',
+                    'val/box_loss', 'val/seg_loss', 'val/obj_loss', 'val/cls_loss',  # val loss
+                    'x/lr0', 'x/lr1', 'x/lr2']  # params
+    
+            for x, key in zip(list(mloss) + list(results) + lr, keys):
+                try:
+                    name = str(key).replace('/', '_')
+                    pxl.log(name=name, type=LogType.LINE, data=float(x))
+                except Exception as e:
+                    LOGGER.info(str(e))
+                    try:
+                        #name = tag.cpu()
+                        name = str(key).replace('/', '_')
+                        pxl.log(name=name, type=LogType.LINE, data=float(x))
+                    except Exception as e:
+                        print(e)
+                        print(key, "can't be uploaded")
 
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
@@ -598,12 +620,7 @@ def main(opt, callbacks=Callbacks()):
         # ei = [isinstance(x, (int, float)) for x in hyp.values()]  # evolvable indices
         evolve_yaml, evolve_csv = save_dir / 'hyp_evolve.yaml', save_dir / 'evolve.csv'
         if opt.bucket:
-            # download evolve.csv if exists
-            subprocess.run([
-                'gsutil',
-                'cp',
-                f'gs://{opt.bucket}/evolve.csv',
-                str(evolve_csv),])
+            os.system(f'gsutil cp gs://{opt.bucket}/evolve.csv {evolve_csv}')  # download evolve.csv if exists
 
         for _ in range(opt.evolve):  # generations to evolve
             if evolve_csv.exists():  # if evolve.csv exists: select best hyps and mutate
