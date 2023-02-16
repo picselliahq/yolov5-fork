@@ -65,7 +65,6 @@ from picsellia.types.enums import LogType
 LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv('RANK', -1))
 WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
-GIT_INFO = check_git_info()
 
 
 def train(hyp, opt, device, callbacks, pxl=None):  # hyp is path/to/hyp.yaml or hyp dictionary
@@ -369,7 +368,7 @@ def train(hyp, opt, device, callbacks, pxl=None):  # hyp is path/to/hyp.yaml or 
                     'val/box_loss', 'val/obj_loss', 'val/cls_loss',  # val loss
                     'x/lr0', 'x/lr1', 'x/lr2']  # params
     
-            for x, key in zip(list(mloss[:-1]) + list(results) + lr, keys):
+            for x, key in zip(list(mloss) + list(results) + lr, keys):
                 try:
                     name = str(key).replace('/', '_')
                     pxl.log(name=name, type=LogType.LINE, data=float(x))
@@ -401,7 +400,7 @@ def train(hyp, opt, device, callbacks, pxl=None):  # hyp is path/to/hyp.yaml or 
                     'updates': ema.updates,
                     'optimizer': optimizer.state_dict(),
                     'opt': vars(opt),
-                    'git': GIT_INFO,  # {remote, branch, commit} if a git repo
+                    # 'git': GIT_INFO,  # {remote, branch, commit} if a git repo
                     'date': datetime.now().isoformat()}
 
                 # Save last, best and delete
