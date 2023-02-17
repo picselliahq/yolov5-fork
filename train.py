@@ -523,7 +523,7 @@ def train(
                     single_cls=single_cls,
                     dataloader=val_loader,
                     save_dir=save_dir,
-                    plots=True,
+                    plots=False,
                     callbacks=callbacks,
                     compute_loss=compute_loss,
                 )
